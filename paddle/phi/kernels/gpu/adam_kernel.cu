@@ -101,11 +101,24 @@ __global__ void AdamKernelMEM(MT beta1,
     MT g = static_cast<MT>(grad[id]);
     MT mom1 = static_cast<MT>(moment1[id]);
     MT mom2 = static_cast<MT>(moment2[id]);
+    if(id == 177479){
+      printf("adam_kernel threadIdx.x = %d , p = %x, g = %x rm = %x, rv = %x, beta1 = %x, beta2 = %x\n", threadIdx.x, *(int *)&p, *(int *)&g, *(int *)&mom1, *(int *)&mom2, *(int *)&beta1, *(int *)&beta2);
+      printf("adam_kernel threadIdx.x = %d , p = %f, g = %f rm = %f, rv = %f, beta1 = %f, beta2 = %f\n", threadIdx.x, p, g, mom1, mom2, beta1, beta2);
+    }
     mom1 = beta1 * mom1 + (static_cast<MT>(1.0) - beta1) * g;
     mom2 = beta2 * mom2 + (static_cast<MT>(1.0) - beta2) * g * g;
 
+    if(id == 177479){
+      printf("adam_kernel threadIdx.x = %d , p = %x, g = %x rm = %x, rv = %x\n", threadIdx.x, *(int *)&p, *(int *)&g, *(int *)&mom1, *(int *)&mom2);
+      printf("adam_kernel threadIdx.x = %d , p = %f, g = %f rm = %f, rv = %f\n", threadIdx.x, p, g, mom1, mom2);
+    }
+
     MT denom = (sqrt(mom2) / sqrt(static_cast<MT>(1.0) - beta2_pow)) + epsilon;
     p += (mom1 / denom) * (-(lr / (static_cast<MT>(1.0) - beta1_pow)));
+    if(id == 177479){
+      printf("adam_kernel threadIdx.x = %d , p = %x, g = %x rm = %x, rv = %x\n", threadIdx.x, *(int *)&p, *(int *)&g, *(int *)&mom1, *(int *)&mom2);
+      printf("adam_kernel threadIdx.x = %d , p = %f, g = %f rm = %f, rv = %f\n", threadIdx.x, p, g, mom1, mom2);
+    }
 
     moment1_out[id] = mom1;
     moment2_out[id] = mom2;
@@ -113,6 +126,8 @@ __global__ void AdamKernelMEM(MT beta1,
     if (master_param_out) {
       master_param_out[id] = p;
     }
+    if(id == 177479)
+      printf("adam_kernel threadIdx.x = %d , p = %f, rm = %f, rv = %f, mp = %f\n", threadIdx.x, param_out[id], mom1, mom2, p);
   }
 }
 
@@ -154,6 +169,7 @@ void AdamDenseKernel(const Context& dev_ctx,
   using MPDType = typename phi::dtype::MPTypeTrait<T>::Type;
 
   VLOG(4) << "use_global_beta_pow:" << use_global_beta_pow;
+  std::cout<<"param.dtype() = "<<param.dtype()<<std::endl;
 
   bool skip_update_ = false;
   if (skip_update.is_initialized()) {
@@ -263,6 +279,25 @@ void AdamDenseKernel(const Context& dev_ctx,
           dev_ctx.template Alloc<MPDType>(beta2_pow_out));
     }
   }
+
+  std::cout<<"static_cast<T>(0.617920) = "<<static_cast<T>(0.617920)<<std::endl;
+  std::cout<<"T "<<typeid(T).name()<<std::endl;
+
+  cudaDeviceSynchronize();
+
+  T *paramout_gpu = param_out->data<T>();
+  MPDType *masterparamout_gpu = master_out_data;
+  T *paramout_cpu = (T*) malloc((param_out->numel())*sizeof(T));
+  MPDType *masterparamout_cpu = (MPDType*) malloc((param_out->numel())*sizeof(MPDType));
+  //phi::Copy(dev_ctx, param, dev_ctx.GetPlace(), false, param_out);
+  //phi::Copy(dev_ctx, *(params_out[i]), CPUPlace(), false, (paramout[i]));
+  cudaMemcpyAsync((void*)paramout_cpu, (void*)paramout_gpu, (param_out->numel())*sizeof(T), cudaMemcpyDeviceToHost, dev_ctx.stream());
+  cudaMemcpyAsync((void*)masterparamout_cpu, (void*)masterparamout_gpu, (param_out->numel())*sizeof(MPDType), cudaMemcpyDeviceToHost, dev_ctx.stream());
+  
+  std::cout<<"1paramout_cpu[0] = "<<paramout_cpu[0]<<std::endl;
+  std::cout<<"1paramout_cpu[177479] = "<<*(paramout_cpu+177479)<<std::endl;
+  std::cout<<"1masterparamout_cpu[177479] = "<<*(masterparamout_cpu+177479)<<std::endl;
+
 }
 
 template <typename T, typename Context>
