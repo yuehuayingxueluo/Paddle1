@@ -44,41 +44,26 @@ struct AdamFunctor
     MT lr = *learning_rate;
     MT beta1_pow = *beta1_pow_;
     MT beta2_pow = *beta2_pow_;
-    // I'd like this kernel to propagate infs/nans.
-    // if(*noop_gmem == 1)
-    //   return;
-    //获取这个block对应的tensor
+
     int tensor_loc = tl.block_to_tensor[blockIdx.x];
 
-    // potentially use to pass in list of scalar
-    int tensor_num = tl.start_tensor_this_launch + tensor_loc;
-    //获取这个block对应的chunk
     int chunk_idx = tl.block_to_chunk[blockIdx.x] + tl.start_chunk_this_tensor;
-    //获取这个tensor对应的元素个数
+
     int n = tl.sizes[tensor_loc];
-    //获取g的起始数据地址
     const T* g = (T*)tl.addresses[0][tensor_loc];
     g += chunk_idx*chunk_size;
-    //获取p的起始数据地址
     MT* mp;
     T* p;
     p = (T*)tl.addresses[1][tensor_loc];
     p += chunk_idx*chunk_size;
-    //获取m的起始数据地址
     MT* m = (MT*)tl.addresses[2][tensor_loc];
     m += chunk_idx*chunk_size;
-    //获取v的起始数据地址
     MT* v = (MT*)tl.addresses[3][tensor_loc];
     v += chunk_idx*chunk_size;
     mp = (MT*)tl.addresses[4][tensor_loc];
     mp += chunk_idx*chunk_size;
-    //需要计算的元素
     n -= chunk_idx*chunk_size;
 
-    int flag = -1;
-
-    // see note in multi_tensor_scale_kernel.cu
-    //将数据分为ILP块
     for(int i_start = 0;
             i_start < n && i_start < chunk_size;
             i_start += blockDim.x*ILP)
@@ -87,15 +72,12 @@ struct AdamFunctor
       MT r_p[ILP];
       MT r_m[ILP];
       MT r_v[ILP];
-      //每个线程处理每一块对应threadIdx.x的数据
-      //向量化读取
+
 #pragma unroll
       for(int ii = 0; ii < ILP; ii++)
       {
         int i = i_start + threadIdx.x + ii*blockDim.x;
-        if(i == 46407){
-          flag = ii;
-        }
+
         if(i < n && i < chunk_size)
         {
           r_g[ii] = static_cast<MT>(g[i]);
@@ -109,50 +91,34 @@ struct AdamFunctor
           r_v[ii] = MT(0);
         }
       }
-      //进行具体的计算
+
 #pragma unroll
       for(int ii = 0; ii < ILP; ii++)
       {
+
+        MT p = r_p[ii];
+        MT g = r_g[ii];
+        MT m = r_m[ii];
+        MT v = r_v[ii];
+
         if(mode == ADAM_MODE_0) {
-          // r_g[ii] = r_g[ii] + (decay * r_p[ii]);
-          // r_m[ii] = beta1 * r_m[ii] + (1-beta1) * r_g[ii];
-          // r_v[ii] = beta2 * r_v[ii] + (1-beta2) * r_g[ii] * r_g[ii];
-          // MT next_m_unbiased = r_m[ii] / (1 - beta1_pow);
-          // MT next_v_unbiased = r_v[ii] / (1 - beta2_pow);
-          // MT denom = sqrtf(next_v_unbiased) + epsilon;
-          // MT update = next_m_unbiased / denom;
-          // r_p[ii] = r_p[ii] - (lr * update);
-          if(chunk_idx == 2 && flag == ii){
-            printf("i_start = %d, threadIdx.x = %d, blockIdx.x = %d\n", i_start, threadIdx.x, blockIdx.x);
-            printf("multi_tensor_adam_kernel threadIdx.x = %d , p = %x, g = %x rm = %x, rv = %x, beta1 = %x, beta2 = %x\n", threadIdx.x, *(int *)&(r_p[ii]), *(int *)&(r_g[ii]), *(int *)&(r_m[ii]), *(int *)&(r_v[ii]), *(int *)&(beta1), *(int *)&(beta2));
-            printf("multi_tensor_adam_kernel threadIdx.x = %d , p = %f, g = %f rm = %f, rv = %f, beta1 = %f, beta2 = %f\n", threadIdx.x, r_p[ii], r_g[ii], r_m[ii], r_v[ii], beta1, beta2);
-          }
-          r_m[ii] = beta1 * r_m[ii] + (static_cast<MT>(1.0)-beta1) * r_g[ii];
-          r_v[ii] = beta2 * r_v[ii] + (static_cast<MT>(1.0)-beta2) * r_g[ii] * r_g[ii];
-          if(chunk_idx == 2 && flag == ii){
-            printf("1multi_tensor_adam_kernel threadIdx.x = %d , p = %x, g = %x rm = %x, rv = %x\n", threadIdx.x, *(int *)&(r_p[ii]), *(int *)&(r_g[ii]), *(int *)&(r_m[ii]), *(int *)&(r_v[ii]));
-            printf("1multi_tensor_adam_kernel threadIdx.x = %d , p = %f, g = %f rm = %f, rv = %f\n", threadIdx.x, r_p[ii], r_g[ii], r_m[ii], r_v[ii]);
-          }
-          MT denom = (sqrt(r_v[ii]) / sqrt(static_cast<MT>(1.0) - beta2_pow)) + epsilon;
-          r_p[ii] += (r_m[ii] / denom) * (-(lr / (static_cast<MT>(1.0) - beta1_pow)));
-          if(chunk_idx == 2 && flag == ii){
-            printf("2multi_tensor_adam_kernel threadIdx.x = %d , p = %x, g = %x rm = %x, rv = %x\n", threadIdx.x, *(int *)&(r_p[ii]), *(int *)&(r_g[ii]), *(int *)&(r_m[ii]), *(int *)&(r_v[ii]));
-            printf("2multi_tensor_adam_kernel threadIdx.x = %d , p = %f, g = %f rm = %f, rv = %f\n", threadIdx.x, r_p[ii], r_g[ii], r_m[ii], r_v[ii]);
-          }
+          m = beta1 * m + (static_cast<MT>(1.0)-beta1) * g;
+          v = beta2 * v + (static_cast<MT>(1.0)-beta2) * g * g;
+          r_m[ii] = m;
+          r_v[ii] = v;
+          MT denom = (sqrt(v) / sqrt(static_cast<MT>(1.0) - beta2_pow)) + epsilon;
+          p += (m / denom) * (-(lr / (static_cast<MT>(1.0) - beta1_pow)));
+          r_p[ii] = p;
         }
         else { // weight decay
-          // r_m[ii] = beta1 * r_m[ii] + (1-beta1) * r_g[ii];
-          // r_v[ii] = beta2 * r_v[ii] + (1-beta2) * r_g[ii] * r_g[ii];
-          // MT next_m_unbiased = r_m[ii] / beta1_pow;
-          // MT next_v_unbiased = r_v[ii] / beta2_pow;
-          // MT denom = sqrtf(next_v_unbiased) + epsilon;
-          // MT update = (next_m_unbiased / denom) + (decay * r_p[ii]);
-          // r_p[ii] = r_p[ii] - (lr * update);
-          r_p[ii] *= (static_cast<MT>(1.0) - lr * decay);
-          r_m[ii] = beta1 * r_m[ii] + (static_cast<MT>(1.0)-beta1) * r_g[ii];
-          r_v[ii] = beta2 * r_v[ii] + (static_cast<MT>(1.0)-beta2) * r_g[ii] * r_g[ii];
-          MT denom = (sqrt(r_v[ii]) / sqrt(static_cast<MT>(1.0) - beta2_pow)) + epsilon;
-          r_p[ii] += (r_m[ii] / denom) * (-(lr / (static_cast<MT>(1.0) - beta1_pow)));
+          p *= (static_cast<MT>(1.0) - lr * decay);
+          m = beta1 * m + (static_cast<MT>(1.0)-beta1) * r_g[ii];
+          v = beta2 * v + (static_cast<MT>(1.0)-beta2) * r_g[ii] * r_g[ii];
+          r_m[ii] = m;
+          r_v[ii] = v;
+          MT denom = (sqrt(v) / sqrt(static_cast<MT>(1.0) - beta2_pow)) + epsilon;
+          p += (m / denom) * (-(lr / (static_cast<MT>(1.0) - beta1_pow)));
+          r_p[ii] = p;
         }
       }
 #pragma unroll
@@ -167,14 +133,11 @@ struct AdamFunctor
           if(multi_precision){
             mp[i] = r_p[ii];
           }
-          if(chunk_idx == 2 && flag == ii){
-            printf("1multi_tensor_adam_kernel threadIdx.x = %d , p = %f, rm = %f, rv = %f, mp = %f\n", threadIdx.x, p[i], m[i], v[i], mp[i]);
-            flag = -1;
-          }
         }
       }
     }
   }
+  
 };
 
 template <typename T>
@@ -222,8 +185,6 @@ void MultiTensorAdamKernel(const Context& dev_ctx,
   MPDType weight_decay_ = static_cast<MPDType>(weight_decay);
   MPDType epsilon_ = epsilon.to<MPDType>();
 
-  std::cout<<"params[0].dtype() = "<<params[0]->dtype()<<std::endl;
-
   bool skip_update_ = false;
   if (skip_update.is_initialized()) {
     PADDLE_ENFORCE_EQ(
@@ -240,10 +201,15 @@ void MultiTensorAdamKernel(const Context& dev_ctx,
   // mutable_data
   if (skip_update_) {
     VLOG(4) << "Adam skip update";
+    for(int  i = 0; i < params.size(); i++){
+      phi::Copy(dev_ctx, *params[i], dev_ctx.GetPlace(), false, params_out[i]);
+      phi::Copy(dev_ctx, *moments1[i], dev_ctx.GetPlace(), false, moments1_out[i]);
+      phi::Copy(dev_ctx, *moments2[i], dev_ctx.GetPlace(), false, moments2_out[i]);
+    }
+    phi::Copy(dev_ctx, beta1_pow, beta1_pow.place(), false, beta1_pow_out);
+    phi::Copy(dev_ctx, beta2_pow, beta2_pow.place(), false, beta2_pow_out);
     return;
   }
-
-  std::cout<<"1.cu"<<std::endl;
 
   std::vector<std::vector<DenseTensor *>> tensor_lists;
 
@@ -251,10 +217,6 @@ void MultiTensorAdamKernel(const Context& dev_ctx,
   tensor_lists.push_back(moments1_out);
   tensor_lists.push_back(moments2_out);
   tensor_lists.push_back(master_param_out);
-
-  std::cout<<"2.cu"<<std::endl;
-
-  std::cout<<"(adamMode_t) mode"<<(adamMode_t) 0<<std::endl;
 
   multi_tensor_apply<5, MPDType>(
     dev_ctx,
@@ -273,27 +235,6 @@ void MultiTensorAdamKernel(const Context& dev_ctx,
     multi_precision,
     weight_decay_);
 
-  cudaDeviceSynchronize();
-
-  std::cout<<"static_cast<T>(0.617920) = "<<static_cast<T>(0.617920)<<std::endl;
-  std::cout<<"T "<<typeid(T).name()<<std::endl;
-
-  T *paramout_gpu = params_out[0]->data<T>();
-  MPDType *masterparamout_gpu = master_param_out[0]->data<MPDType>();
-  T *paramout_cpu = (T*) malloc((params_out[0]->numel())*sizeof(T));
-  MPDType *masterparamout_cpu = (MPDType*) malloc((params_out[0]->numel())*sizeof(MPDType));
-
-  for(int i = 0; i < params_out.size(); i++){
-    //phi::Copy(dev_ctx, param, dev_ctx.GetPlace(), false, param_out);
-    //phi::Copy(dev_ctx, *(params_out[i]), CPUPlace(), false, (paramout[i]));
-    cudaMemcpyAsync((void*)paramout_cpu, (void*)paramout_gpu, (params_out[0]->numel())*sizeof(T), cudaMemcpyDeviceToHost, dev_ctx.stream());
-    cudaMemcpyAsync((void*)masterparamout_cpu, (void*)masterparamout_gpu, (params_out[0]->numel())*sizeof(MPDType), cudaMemcpyDeviceToHost, dev_ctx.stream());
-  }
-  
-  std::cout<<"paramout_cpu[0] = "<<paramout_cpu[0]<<std::endl;
-  std::cout<<"paramout_cpu[177479] = "<<*(paramout_cpu+177479)<<std::endl;
-  std::cout<<"masterparamout_cpu[177479] = "<<*(masterparamout_cpu+177479)<<std::endl;
-
   if (!use_global_beta_pow) {
     // Update with gpu
     UpdateBetaPow<MPDType><<<1, 32, 0, dev_ctx.stream()>>>(
@@ -304,8 +245,6 @@ void MultiTensorAdamKernel(const Context& dev_ctx,
         dev_ctx.template Alloc<MPDType>(beta1_pow_out),
         dev_ctx.template Alloc<MPDType>(beta2_pow_out));
   }
-
-  std::cout<<"3.cu"<<std::endl;
 
 }
 
